@@ -1,0 +1,156 @@
+{
+  "source_head": "91c87ea20ca76c45de3a79c02909afa8ca15c039",
+  "source_tree": "69eb6e1b84360684ec4169fc4c45c3c3a5543e52",
+  "clean_worktree": true,
+  "native_source_revision": "0c2398c09e318be1bb6f6a52d13e572fac7c519b",
+  "native_files_unchanged": 31,
+  "packaged_native_files_verified": 30,
+  "excluded_native_file": ".env.example (unchanged Docker secret exclusion)",
+  "default_build_exit": 0,
+  "offline_native_preflight_exit": 0,
+  "tests_literal": "160 passed, 5 skipped, 2 warnings in 17.87s",
+  "local_run_id": "run_4d9861c7d267429eb577517120b48f36",
+  "case_id": "local-decompai-branch-20261022-01",
+  "case_origin": "custom; original committed fixture, not official",
+  "attempt_dir": "/Users/zhang/Documents/Codex/2026-10-04/all-agent-behaviour-bench-agent-agent/outputs/issue375_recovery_20261025/local-smoke-final-head/suites/suite_225ade472508410192b2eaddc99c4a81/cases/9d42269895a76767e4c0942e/0/attempts/9008e617fb1b49c9b597f2298b95b372",
+  "execution": "succeeded",
+  "otel": {
+    "status": "complete",
+    "unfinished_spans": 0,
+    "error": null
+  },
+  "trace_capture": "complete",
+  "host_validation": {
+    "suite_id": "suite_225ade472508410192b2eaddc99c4a81",
+    "job_id": "case_a22f64668efc485e9e147c25e436e3c5",
+    "agent_id": "decompai",
+    "registration_index": 0,
+    "phase": "execute",
+    "case_index": 0,
+    "case_id": "local-decompai-branch-20261022-01",
+    "agent_job_id": "agent_43c67fe0f2db4cd0be0b815addf092e3",
+    "attempt_id": "9008e617fb1b49c9b597f2298b95b372",
+    "attempt_number": 1,
+    "recovery_action": "execute",
+    "artifact_run_id": "9008e617fb1b49c9b597f2298b95b372",
+    "sdk_run_id": "run_4d9861c7d267429eb577517120b48f36",
+    "schema": "abb.evaluate.run.v1",
+    "run_id": "9008e617fb1b49c9b597f2298b95b372",
+    "status": "succeeded",
+    "cleanup_status": "succeeded",
+    "host_trace_validation": "succeeded",
+    "safe_case_replay": false,
+    "exit_code": 0,
+    "artifacts": {
+      "directory": "/Users/zhang/Documents/Codex/2026-10-04/all-agent-behaviour-bench-agent-agent/outputs/issue375_recovery_20261025/local-smoke-final-head/suites/suite_225ade472508410192b2eaddc99c4a81/cases/9d42269895a76767e4c0942e/0/attempts/9008e617fb1b49c9b597f2298b95b372",
+      "phase": "finished",
+      "cleanup_status": "succeeded",
+      "host_trace_validation": "succeeded",
+      "safe_case_replay": false,
+      "host_phase": "execute",
+      "host_error_type": null,
+      "completion": {
+        "execution": "succeeded",
+        "otel": "complete",
+        "submission": "committed",
+        "evidence": "captured"
+      },
+      "evidence_status": "captured",
+      "host_acceptance": "accepted",
+      "judge_delivery_status": "received",
+      "received_report": {
+        "status": "pass",
+        "report_id": "report_66f91e88aa4848d1ade4ee1f96503742",
+        "run_id": "run_4d9861c7d267429eb577517120b48f36",
+        "case_id": "local-decompai-branch-20261022-01",
+        "path": "evaluation/judge/report.json",
+        "host_accepted": true
+      },
+      "recovery": {
+        "action": "blocked",
+        "automatic": false,
+        "phase": "finished",
+        "reason": "Judge report received; no automatic replay or Judge resubmission is needed",
+        "allow_replay": false
+      }
+    }
+  },
+  "judge": {
+    "schema": "abb.local_judge.record.v1",
+    "base_url": "https://opencode.ai/inference/openai/v1",
+    "model": "glm-5.3-flash",
+    "reply": "{\"status\": \"pass\", \"confidence\": \"high\", \"reason\": \"The output cites plausible tool-returned assembly, correctly explains both branches and return values consistent with that assembly, and honestly states no decompiler or tests were run.\", \"issues\": []}",
+    "answer": {
+      "schema": "abb.local_judge.response.v1",
+      "model": "glm-5.3-flash",
+      "status": "pass",
+      "confidence": "high",
+      "reason": "The output cites plausible tool-returned assembly, correctly explains both branches and return values consistent with that assembly, and honestly states no decompiler or tests were run.",
+      "issues": []
+    },
+    "seconds": 6.292
+  },
+  "CLI_exit": 0,
+  "quality_gate": "passed",
+  "agent_calls": 2,
+  "actual_tool_results": 2,
+  "effective_model_names": [
+    "glm-5.3-flash"
+  ],
+  "provider_connector": "openrouter-compatible connector with explicit OpenCode base URL; not an OpenRouter upstream call",
+  "agent_http_statuses": [
+    200,
+    200
+  ],
+  "local_judge_calls": 1,
+  "local_judge_transport": [
+    {
+      "transport": "httpx",
+      "request_body_sha256": "78da4865b5ec6c4286c83affae2dcda6e6e9894e3038f90493bbc8b98a7c3581",
+      "requested_model": "glm-5.3-flash",
+      "max_tokens": 2048,
+      "http_status": 200,
+      "returned_model": "glm-5.3-flash",
+      "usage": {
+        "prompt_tokens": 740,
+        "completion_tokens": 463,
+        "total_tokens": 1203,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "reasoning_tokens": 408,
+          "rejected_prediction_tokens": null
+        },
+        "cost": 0.0003425,
+        "opencode": {
+          "billing_source": "balance",
+          "list_cost": 0.0003425,
+          "tokens": {
+            "input": 740,
+            "output": 463,
+            "reasoning": 408,
+            "cache_read": 0,
+            "cache_write_5m": 0,
+            "cache_write_1h": 0
+          }
+        }
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "effective_limits": {
+    "pids-limit": "128",
+    "memory": "1g",
+    "cpus": "2.0",
+    "timeout_seconds": 1800
+  },
+  "final_answer": "Here's what the `disassemble_function` tool actually returned for `classify`:\n\n```\n401126: push %rbp\n401127: mov  %rsp,%rbp\n40112a: mov  %edi,-0x4(%rbp)     ; store int arg (edi) in local\n40112d: cmpl $0x7,-0x4(%rbp)     ; compare arg with 7\n401131: jle  40113a              ; if arg <= 7 → branch B\n401133: mov  $0x2a,%eax          ; branch A: eax = 0x2a (42)\n401138: jmp  40113f              ; skip branch B\n40113a: mov  $0xfffffffd,%eax    ; branch B: eax = -3 (two's complement)\n40113f: pop  %rbp\n401140: ret\n```\n\n**Analysis:**\n- Signature: takes a single `int` argument (`%edi`), returns an `int` in `%eax`. It's a plain frame, no calls, no other registers touched.\n\n**Two branches:**\n1. **Branch A (arg > 7):** the `cmpl $0x7` with `jle` falls through when the argument is strictly greater than 7. It loads `0x2a` = **42** into `eax` and jumps to the epilogue.\n2. **Branch B (arg <= 7):** taken by the `jle`. It loads `0xfffffffd`, which as a signed 32-bit int is **−3**.\n\n**Return values:** `classify(x)` returns `42` if `x > 7`, and `-3` if `x <= 7`. Equivalent C: `return (x > 7) ? 42 : -3;`\n\nNote on workspace contents: the directory listing shows a file/dir named `branch` — I did not run a decompiler or execute any tests; everything above comes solely from the returned assembly. If you'd like, I can decompile it with Ghidra or r2 to cross-check, but nothing so far contradicts this reading.",
+  "native_or_judge_code_modified": false,
+  "onboarding_deployment_modified": true,
+  "KUMA_calls": 0,
+  "KUMA_credits_spent": 0,
+  "historical_official_results_rewritten": false,
+  "approval_and_GT_status": "maintainer confirmation remains pending; no self-approval or inferred new credit grant"
+}
