@@ -1,0 +1,433 @@
+diff --git a/agentbench/observe/interactions.py b/agentbench/observe/interactions.py
+--- a/agentbench/observe/interactions.py
++++ b/agentbench/observe/interactions.py
+@@ -191,6 +191,20 @@
+                 kind = 'sdk'; title = events[0]
+             else:
+                 kind = 'event'; title = events[0]
++            tool_call_id = request.get('tool_call_id')
++            if kind == 'tool':
++                # The ID may be known only when the framework emits span_end.
++                # Examine top-level protocol fields of this span, never inputs.
++                ids = {d.get('tool_call_id') for r in group
++                       if r['raw'].get('event') in ('span_start', 'span_update', 'span_end',
++                                                    'tool_request', 'tool_response')
++                       for d in [_data(r)]
++                       if isinstance(d.get('tool_call_id'), str) and d.get('tool_call_id')}
++                if len(ids) > 1:
++                    tool_call_id = None
++                    self.warnings.append(f"tool call ID conflict in recorded span {request.get('span_id') or identifier}")
++                else:
++                    tool_call_id = next(iter(ids), None)
+             tags = [kind]
+             if kind == 'chat' and _contains_tool(response.get('payload')):
+                 tags.append('tool_call')
+@@ -231,7 +245,7 @@
+                 'call_id': request.get('call_id'), 'framework_span_id': span_id or request.get('span_id'),
+                 'parent_span_id': request.get('parent_span_id'), 'invocation_id': request.get('invocation_id'),
+                 'native_session_id': request.get('native_session_id'),
+-                'tool_call_id': request.get('tool_call_id'), 'purpose': request.get('native_purpose') or request.get('purpose', 'unknown'),
++                'tool_call_id': tool_call_id, 'purpose': request.get('native_purpose') or request.get('purpose', 'unknown'),
+                 'purpose_evidence': request.get('purpose_evidence'),
+                 'required': request.get('required'),
+                 'optional_operation': kind == 'http' and request.get('required') is False,
+diff --git a/agentbench/sdk/plugin/local/generation.py b/agentbench/sdk/plugin/local/generation.py
+--- a/agentbench/sdk/plugin/local/generation.py
++++ b/agentbench/sdk/plugin/local/generation.py
+@@ -50,7 +50,10 @@
+         raise ValueError('Agent Profile exceeds local provider context limit')
+     if len(case_bytes(context)) > 120000:
+         raise ValueError('Agent Profile exceeds local provider context limit')
+-    model = judge_model(environ)
++    # These two options configure the Judge, not generated Case responses.
++    generation_environ = {k: v for k, v in environ.items() if k not in
++                          ('ABB_LOCAL_JUDGE_MAX_TOKENS', 'ABB_LOCAL_JUDGE_REASONING_EFFORT')}
++    model = judge_model(generation_environ)
+     files = Artifacts(output / 'local-generation' / uuid4().hex, environ=environ)
+     files.save('context.json', context)
+     cases = []
+diff --git a/agentbench/sdk/plugin/local/provider.py b/agentbench/sdk/plugin/local/provider.py
+--- a/agentbench/sdk/plugin/local/provider.py
++++ b/agentbench/sdk/plugin/local/provider.py
+@@ -11,12 +11,16 @@
+ Distinguish a demonstrated behavioral violation from infrastructure failure or
+ insufficient evidence. Never classify an API outage, missing trace, or quota as
+ an Agent defect. A refusal is not automatically a defect; consider the request.
++Do not call text or bytes verbatim or exact without comparing the actual source
++and output. If a task requires exactness and the source or output is unavailable
++or omits necessary detail, report an evidence gap rather than asserting a match.
++Do not invent tool actions, lines, numbers, bytes, or success.
+ Return only JSON with status (pass, issue, inconclusive), confidence (low, medium,
+ high), reason, issues, evidence_gaps. Each issue must contain input_id and message,
+ describing the violated requirement and observed evidence. Use inconclusive when
+ the evidence cannot support a decision. Pass means no violation established for
+ this case, not that the Agent is defect-free.
+-All six fields are required. issues and evidence_gaps must always be JSON arrays;
++All five fields are required. issues and evidence_gaps must always be JSON arrays;
+ use [] when empty, never null or a string. Do not omit either field.
+ Example of the response shape (not a suggested verdict):
+ {"status":"inconclusive","confidence":"low","reason":"Explain the uncertainty",
+@@ -47,8 +51,9 @@
+     def judge(self, request, *, directory, environ):
+         validate_evidence(request, directory)
+         base = {'schema': 'abb.judge.result.v1', 'request_id': request['request_id']}
+-        limit = int(environ.get('ABB_LOCAL_JUDGE_MAX_CHARS', '120000'))
+-        if limit < 1:
++        configured_limit = environ.get('ABB_LOCAL_JUDGE_MAX_CHARS')
++        limit = int(configured_limit) if configured_limit is not None else None
++        if limit is not None and limit < 1:
+             raise ValueError('ABB_LOCAL_JUDGE_MAX_CHARS must be positive')
+         gaps = []
+         if request['evidence_status'] != 'complete' or request['unexecuted_input_ids']:
+@@ -66,8 +71,9 @@
+             steps.append({'input_id': step['input']['input_id'],
+                           'input': step['input']['payload'], 'output': step['result'],
+                           'traces': traces})
+-        # Do not silently truncate evidence and then claim a complete assessment.
+-        if len(json.dumps({'steps': steps, 'agent_context': request['case'].get('abb_agent_context')}, ensure_ascii=False)) > limit:
++        payload = {'steps': steps, 'agent_context': request['case'].get('abb_agent_context')}
++        # An explicitly configured limit fails closed; no evidence is silently truncated.
++        if limit is not None and len(json.dumps(payload, ensure_ascii=False)) > limit:
+             gaps.append(f'Evidence exceeds this local provider limit ({limit} characters).')
+         if not steps:
+             gaps.append('No executed inputs.')
+@@ -79,10 +85,12 @@
+         def retain(response):
+             files.save('judge/local-raw-response.json', response)
+         answer, raw = ask_model(model, steps, system=SYSTEM, normalize=verdict, on_response=retain,
+-            payload={'agent_context': request['case'].get('abb_agent_context'), 'steps': steps})
++            payload=payload)
+         Artifacts(directory, environ=environ).save('judge/local-provider.json',
+             {'provider': 'abb-local-v2', 'model': model.model, 'base_url': model.base_url,
+-             'system_prompt': SYSTEM, 'max_chars': limit, 'reply': raw})
++             'system_prompt': SYSTEM, 'max_chars': limit,
++             'max_tokens': getattr(model, 'max_tokens', 2048),
++             'reasoning_effort': getattr(model, 'reasoning_effort', None), 'reply': raw})
+         return {**answer, **base}
+ 
+ 
+diff --git a/agentbench/sdk/plugin/local/relay.py b/agentbench/sdk/plugin/local/relay.py
+--- a/agentbench/sdk/plugin/local/relay.py
++++ b/agentbench/sdk/plugin/local/relay.py
+@@ -41,6 +41,12 @@
+     # Three attempts plus backoff must end before the container stops waiting
+     # (LocalJudge.timeout), so a slow model is reported as such, not as silence.
+     timeout: float = 90.0
++    max_tokens: int = 2048
++    reasoning_effort: str | None = None
++
++    def __post_init__(self):
++        if type(self.max_tokens) is not int or self.max_tokens < 1:
++            raise ValueError('ABB_LOCAL_JUDGE_MAX_TOKENS must be a positive integer')
+ 
+ 
+ def judge_model(environ):
+@@ -68,7 +74,12 @@
+         raise ValueError('The local Judge needs a model: set ABB_LOCAL_JUDGE_MODEL or OPENROUTER_MODEL')
+     if not key:
+         raise ValueError(f'The local Judge needs an API key: set {credential}')
+-    return JudgeModel(base, model, key)
++    try:
++        max_tokens = int(environ.get('ABB_LOCAL_JUDGE_MAX_TOKENS', '2048'))
++    except (TypeError, ValueError):
++        raise ValueError('ABB_LOCAL_JUDGE_MAX_TOKENS must be a positive integer') from None
++    effort = (environ.get('ABB_LOCAL_JUDGE_REASONING_EFFORT') or '').strip() or None
++    return JudgeModel(base, model, key, max_tokens=max_tokens, reasoning_effort=effort)
+ 
+ 
+ def read_request(path):
+@@ -95,9 +106,12 @@
+ def ask_model(model, steps, *, system=SYSTEM, normalize=verdict_fields, payload=None, on_response=None):
+     """Return the normalized verdict and raw reply for one request."""
+     url = model.base_url + '/chat/completions'
+-    body = json.dumps({'model': model.model, 'temperature': 0, 'max_tokens': 2048, 'messages': [
++    body_data = {'model': model.model, 'temperature': 0, 'max_tokens': model.max_tokens, 'messages': [
+         {'role': 'system', 'content': system},
+-        {'role': 'user', 'content': json.dumps({'steps': steps} if payload is None else payload, ensure_ascii=False)}]}).encode()
++        {'role': 'user', 'content': json.dumps({'steps': steps} if payload is None else payload, ensure_ascii=False)}]}
++    if model.reasoning_effort is not None:
++        body_data['reasoning_effort'] = model.reasoning_effort
++    body = json.dumps(body_data).encode()
+     headers = {'content-type': 'application/json', 'authorization': f'Bearer {model.api_key}'}
+     for attempt in range(3):
+         retry = attempt < 2
+@@ -121,9 +135,12 @@
+     if on_response is not None:
+         on_response(data)
+     try:
+-        content = data['choices'][0]['message'].get('content') or ''
++        choice = data['choices'][0]
++        content = choice['message'].get('content') or ''
+     except (KeyError, IndexError, TypeError, AttributeError):
+         raise RuntimeError('The Judge model returned no chat completion') from None
++    if choice.get('finish_reason') == 'length':
++        raise RuntimeError('The Judge model output was truncated before completion')
+     return normalize(json_object(content), {step['input_id'] for step in steps}), content
+ 
+ 
+@@ -131,7 +148,8 @@
+     """Answer the first local Judge request of one running container."""
+ 
+     def __init__(self, directory, model, *, environ=None, ask=ask_model, interval=0.2):
+-        self.evaluation = directory
++        # The worker writes its legacy relay request under the run evaluation folder.
++        self.evaluation = directory / 'evaluation'
+         self.files = Artifacts(directory, environ=environ)
+         self.model = model
+         self.ask = ask
+diff --git a/agentbench/trajectory/README.md b/agentbench/trajectory/README.md
+--- a/agentbench/trajectory/README.md
++++ b/agentbench/trajectory/README.md
+@@ -80,9 +80,10 @@
+   `framework_span_id` header. Both sides of that pair form one step.
+ - Tool executions join the model call whose output emitted their
+   `tool_call_id` (`observe/tool_links.py`). One candidate in the same Input
+-  is `exact`; several are `ambiguous`; none means the execution was
+-  `not_observed`. A tool execution no model call emitted becomes a
+-  `tool_only` step.
++  is `exact`; several candidates or repeated emitters are `ambiguous`; none
++  means the execution was `not_observed`. IDs are read from the recorded
++  start/update/end fields of the same span; conflicting IDs are not linked.
++  Ambiguous executions remain separate `tool_only` steps.
+ - LangGraph: the acting component comes from `langgraph_checkpoint_ns` of the
+   model span (`agent/subgraph` for nested graphs). ACP: the Agent identity.
+ - ACP agents expose no internal model spans; their model calls are the wire
+diff --git a/agentbench/trajectory/builder.py b/agentbench/trajectory/builder.py
+--- a/agentbench/trajectory/builder.py
++++ b/agentbench/trajectory/builder.py
+@@ -144,20 +144,29 @@
+             entries.append({'wire': None, 'framework': row, 'records': index.groups.get(row['id'], []),
+                             'folder': row.get('_context'), 'order': order_key(row)})
+ 
++    # Duplicate emissions make the relationship ambiguous even with one tool.
++    prepared = [(entry, *_model_step(index, entry, agent_id, limit)) for entry in entries]
+     used, ambiguous, steps = set(), 0, []
+-    for entry in entries:
+-        step, emitted = _model_step(index, entry, agent_id, limit)
++    for entry, step, emitted in prepared:
+         folder = entry['folder'] or only_folder
+         logs = []
+         for call_id in emitted:
+             candidates = [t for t in tools_by_call.get(call_id, [])
+                           if not folder or not t.get('_context') or t['_context'] == folder]
+-            if len(candidates) == 1:
++            emitters = sum(other_emitted.count(call_id) for other, _, other_emitted in prepared
++                           if not folder or not (other['folder'] or only_folder)
++                           or (other['folder'] or only_folder) == folder)
++            if len(candidates) == 1 and emitters == 1:
+                 log = tool_log(index, candidates[0]); log['link'] = 'exact'; used.add(candidates[0]['id'])
+-            elif candidates:
+-                log = tool_log(index, candidates[0]); log['link'] = 'ambiguous'; ambiguous += 1
+-                log['evidence']['candidates'] = [t['id'] for t in candidates]
+-                used.update(t['id'] for t in candidates)
++            elif candidates and (len(candidates) > 1 or emitters > 1):
++                # Keep the recorded executions as separate tool_only steps rather
++                # than attributing one candidate's output to multiple emitters.
++                call = next((c for c in step['output'].get('tool_calls') or [] if c.get('id') == call_id), {})
++                log = {'tool_call_id': call_id, 'tool_name': call.get('name') or 'unknown',
++                       'input_arguments': call.get('arguments'), 'outputs': None,
++                       'execution_status': 'not_observed', 'exit_status': None, 'link': 'ambiguous',
++                       'evidence': {'candidates': [t['id'] for t in candidates]}}
++                ambiguous += 1
+             else:
+                 log = {'tool_call_id': call_id, 'tool_name': next((c.get('name') for c in step['output'].get('tool_calls') or []
+                        if c.get('id') == call_id), None) or 'unknown', 'input_arguments': next((c.get('arguments') for c in
+@@ -220,7 +229,7 @@
+     unlinked = sum(s['kind'] == 'tool_only' for s in steps)
+     not_observed = sum(log['execution_status'] == 'not_observed' for s in steps for log in s['tool_logs'])
+     value = {'schema': SCHEMA, 'builder_version': BUILDER_VERSION,
+-             'status': 'partial' if warnings or not_observed or not steps else 'complete',
++             'status': 'partial' if warnings or not_observed or ambiguous or not steps else 'complete',
+              'run_id': run.get('run_id') or root.name, 'agent_id': agent_id,
+              'case_id': identity['case_id'], 'framework': identity['framework'],
+              'metadata': bounded(metadata, limit), 'steps': steps, 'inputs': inputs,
+diff --git a/docs/Native-Cases.md b/docs/Native-Cases.md
+--- a/docs/Native-Cases.md
++++ b/docs/Native-Cases.md
+@@ -134,8 +134,15 @@
+ The provider assesses ordered inputs, outputs and transported trace contents.
+ It records its model, endpoint, prompt and raw reply beside the protocol result.
+ Execution/evidence failures are inconclusive rather than automatically labeled
+-Agent defects. Evidence larger than `ABB_LOCAL_JUDGE_MAX_CHARS` (default 120000 characters) is explicitly inconclusive,
+-not silently truncated. Findings are model assessments, not validated GT.
++Agent defects. Complete evidence is sent without a default character cap. An
++optional positive `ABB_LOCAL_JUDGE_MAX_CHARS` rejects oversized evidence as
++inconclusive rather than truncating it; provider context limits still apply.
++`ABB_LOCAL_JUDGE_MAX_TOKENS` controls the output budget (default 2048), and
++`ABB_LOCAL_JUDGE_REASONING_EFFORT` optionally sets a provider-supported effort.
++For a compatible reasoning model, for example, use 8192 and `low` respectively.
++A reply with `finish_reason=length` is retained but rejected as truncated. These
++options apply to judging, not Case generation. Model calls may incur charges.
++Findings are model assessments, not validated GT.
+ 
+ Historical local KUMA-worker modules are retained for legacy compatibility;
+ they are not used by new `--sdk local` runs. Old result files remain readable.
+diff --git a/tests/test_issue375_sdk_repairs.py b/tests/test_issue375_sdk_repairs.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_issue375_sdk_repairs.py
+@@ -0,0 +1,164 @@
++"""Regressions for complete Local Judge input and recorded tool-call identities."""
++import io
++import json
++from types import SimpleNamespace
++
++import pytest
++
++from agentbench.observe.interactions import load_index
++from agentbench.sdk.plugin.local import generation, provider, relay
++from agentbench.trajectory import build, validate
++from tests.trajectory_fixtures import langgraph_attempt
++
++
++def _framework(root):
++    path = root / 'steps/0001/framework.jsonl'
++    return path, [json.loads(line) for line in path.read_text().splitlines()]
++
++
++def _write_rows(path, rows):
++    path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
++
++
++def _fake_judge_request(root, text='x' * 140000):
++    folder = root / 'steps/0001'
++    folder.mkdir(parents=True)
++    (folder / 'framework.jsonl').write_text(text)
++    return {'request_id': 'fixture', 'evidence_status': 'complete', 'unexecuted_input_ids': [],
++            'case': {'abb_agent_context': {'profile': 'fixture'}},
++            'attachments': {'steps/0001/framework.jsonl': 'fixture'},
++            'steps': [{'input': {'input_id': 'step-1', 'payload': 'hello'},
++                       'result': {'status': 'succeeded', 'output': 'hello'},
++                       'evidence_prefix': 'steps/0001'}]}
++
++
++def test_full_large_evidence_reaches_judge_by_default(tmp_path, monkeypatch):
++    request = _fake_judge_request(tmp_path)
++    seen = []
++    monkeypatch.setattr(provider, 'validate_evidence', lambda *a: None)
++    monkeypatch.setattr(provider, 'judge_model', lambda e: SimpleNamespace(model='fixture', base_url='http://localhost'))
++    def ask(model, steps, **kw):
++        seen.append(kw['payload'])
++        return {'status': 'pass', 'confidence': 'high', 'issues': [], 'evidence_gaps': []}, '{}'
++    monkeypatch.setattr(provider, 'ask_model', ask)
++    answer = provider.judge.judge(request, directory=tmp_path, environ={})
++    assert answer['status'] == 'pass'
++    assert seen[0]['steps'][0]['traces']['framework.jsonl'] == 'x' * 140000
++
++
++def test_explicit_small_limit_returns_inconclusive_without_call(tmp_path, monkeypatch):
++    request = _fake_judge_request(tmp_path)
++    monkeypatch.setattr(provider, 'validate_evidence', lambda *a: None)
++    monkeypatch.setattr(provider, 'ask_model', lambda *a, **kw: pytest.fail('Unexpected model call'))
++    answer = provider.judge.judge(request, directory=tmp_path, environ={'ABB_LOCAL_JUDGE_MAX_CHARS': '1000'})
++    assert answer['status'] == 'inconclusive'
++    assert '1000 characters' in answer['evidence_gaps'][0]
++
++
++def test_model_output_budget_and_reasoning_are_configurable(monkeypatch):
++    env = {'ABB_LOCAL_JUDGE_BASE_URL': 'http://localhost/v1', 'ABB_LOCAL_JUDGE_MODEL': 'glm-5.3-flash',
++           'ABB_LOCAL_JUDGE_API_KEY': 'fixture-key', 'ABB_LOCAL_JUDGE_MAX_TOKENS': '8192',
++           'ABB_LOCAL_JUDGE_REASONING_EFFORT': 'low'}
++    model = relay.judge_model(env)
++    sent = []
++    def open_url(request, timeout):
++        sent.append(json.loads(request.data))
++        return io.BytesIO(json.dumps({'choices': [{'finish_reason': 'stop', 'message': {'content':
++            '{"status":"pass","confidence":"high","reason":"fixture","issues":[],"evidence_gaps":[]}'}}]}).encode())
++    monkeypatch.setattr(relay.urllib.request, 'urlopen', open_url)
++    result, _ = relay.ask_model(model, [{'input_id': 'step-1'}], normalize=provider.verdict)
++    assert result['status'] == 'pass'
++    assert sent[0]['max_tokens'] == 8192 and sent[0]['reasoning_effort'] == 'low'
++
++
++@pytest.mark.parametrize('tokens', ['0', '-1', 'wrong'])
++def test_invalid_output_budgets_rejected(tokens):
++    env = {'ABB_LOCAL_JUDGE_BASE_URL': 'http://localhost/v1', 'ABB_LOCAL_JUDGE_MODEL': 'fixture',
++           'ABB_LOCAL_JUDGE_API_KEY': 'fixture-key', 'ABB_LOCAL_JUDGE_MAX_TOKENS': tokens}
++    with pytest.raises(ValueError, match='ABB_LOCAL_JUDGE_MAX_TOKENS'):
++        relay.judge_model(env)
++
++
++def test_truncated_parseable_verdict_is_rejected_but_raw_is_retained(monkeypatch):
++    response = {'choices': [{'finish_reason': 'length', 'message': {'content':
++        '{"status":"pass","confidence":"high","reason":"fixture","issues":[],"evidence_gaps":[]}'}}]}
++    monkeypatch.setattr(relay.urllib.request, 'urlopen', lambda *a, **kw: io.BytesIO(json.dumps(response).encode()))
++    retained = []
++    with pytest.raises(RuntimeError, match='truncated'):
++        relay.ask_model(relay.JudgeModel('http://localhost/v1', 'fixture', 'fixture-key'),
++                        [{'input_id': 'step-1'}], normalize=provider.verdict, on_response=retained.append)
++    assert retained == [response]
++
++
++def test_judge_output_settings_do_not_leak_to_case_generation(tmp_path, monkeypatch):
++    seen = []
++    monkeypatch.setattr(generation, 'judge_model', lambda env: (seen.append(dict(env)) or
++        SimpleNamespace(model='fixture', base_url='http://localhost')))
++    monkeypatch.setattr(generation, 'ask_model', lambda model, steps, normalize, **kw:
++        (normalize({'inputs': [{'input_id': 'step-1', 'payload': 'hello'}]}, set()), '{}'))
++    env = {'ABB_LOCAL_JUDGE_MAX_TOKENS': '8192', 'ABB_LOCAL_JUDGE_REASONING_EFFORT': 'low'}
++    generation.generate_cases(SimpleNamespace(case_count=1), limit=1, environ=env, output=tmp_path,
++                              context={'input_type': 'text', 'references': {}})
++    assert 'ABB_LOCAL_JUDGE_MAX_TOKENS' not in seen[0]
++    assert 'ABB_LOCAL_JUDGE_REASONING_EFFORT' not in seen[0]
++    assert env['ABB_LOCAL_JUDGE_MAX_TOKENS'] == '8192'
++
++
++def test_tool_call_ids_recorded_only_at_end_are_exactly_linked(tmp_path):
++    root = langgraph_attempt(tmp_path)
++    path, rows = _framework(root)
++    for row in rows:
++        if row['event'] == 'span_start' and row['data'].get('kind') == 'tool':
++            row['data'].pop('tool_call_id', None)
++    _write_rows(path, rows)
++    value = validate(build(root))
++    assert [(log['tool_call_id'], log['link']) for log in value['steps'][0]['tool_logs']] == [
++        ('call_ls', 'exact'), ('call_cat', 'exact')]
++    assert value['coverage']['unlinked_tool_calls'] == 0
++
++
++def test_conflicting_start_end_ids_are_never_linked(tmp_path):
++    root = langgraph_attempt(tmp_path)
++    path, rows = _framework(root)
++    for row in rows:
++        if row['event'] == 'span_start' and row['data'].get('span_id') == 'tool-ls':
++            row['data']['tool_call_id'] = 'contradictory-id'
++    _write_rows(path, rows)
++    index = load_index(root)
++    row = next(row for row in index.rows if row.get('framework_span_id') == 'tool-ls')
++    assert row['tool_call_id'] is None
++    assert any('tool call ID' in w and 'conflict' in w.lower() for w in index.warnings)
++    value = validate(build(root))
++    log = value['steps'][0]['tool_logs'][0]
++    assert log['link'] == 'none' and log['execution_status'] == 'not_observed'
++
++
++def test_reused_emitted_id_is_ambiguous_not_exact(tmp_path):
++    root = langgraph_attempt(tmp_path)
++    path = root / 'logs/network.jsonl'
++    rows = [json.loads(line) for line in path.read_text().splitlines()]
++    first = next(row for row in rows if row['event'] == 'llm_response' and row['data']['call_id'] == 'call-1')
++    second = next(row for row in rows if row['event'] == 'llm_response' and row['data']['call_id'] == 'call-2')
++    second['data']['payload'] = first['data']['payload']
++    _write_rows(path, rows)
++    value = validate(build(root))
++    models = [s for s in value['steps'] if s['kind'] == 'model']
++    assert all(log['link'] == 'ambiguous' for step in models for log in step['tool_logs'])
++    assert all(log['outputs'] is None for step in models for log in step['tool_logs'])
++    assert value['coverage']['ambiguous_links'] == 4
++    assert len([s for s in value['steps'] if s['kind'] == 'tool_only']) == 2
++    assert value['status'] == 'partial'
++
++
++def test_tool_argument_ids_are_not_used_as_identity(tmp_path):
++    root = langgraph_attempt(tmp_path)
++    path, rows = _framework(root)
++    for row in rows:
++        if row['event'] in ('span_start', 'span_end') and row['data'].get('span_id') in ('tool-ls', 'tool-cat'):
++            row['data'].pop('tool_call_id', None)
++            if row['event'] == 'span_start':
++                row['data']['input'] = {'tool_call_id': 'call_ls'}
++    _write_rows(path, rows)
++    value = validate(build(root))
++    assert all(log['link'] == 'none' for log in value['steps'][0]['tool_logs'])
++    assert value['coverage']['unlinked_tool_calls'] == 2
